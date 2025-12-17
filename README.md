@@ -49,6 +49,7 @@ VITE_API_URL=https://api.example.com
 ### 요청 흐름(중요)
 
 - **개발(DEV)**:
+
   - 브라우저 → `http://localhost:<vite_port>/api/...`
   - Vite Dev Server Proxy → `VITE_DEV_API_URL`(기본 `http://localhost:8080`) → 백엔드
   - 장점: 브라우저 CORS 이슈를 피함
@@ -83,5 +84,3 @@ VITE_API_URL=https://api.example.com
   - 백엔드가 실제로 실행 중인지 확인(`http://localhost:8080` 등)
   - 백엔드 포트가 다르면 `VITE_DEV_API_URL`을 설정
   - `npm run dev`를 여러 번 띄웠다면 모두 종료 후 하나만 실행
-
-
