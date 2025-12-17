@@ -6,6 +6,10 @@ import Layout from "../components/Layout";
 import Button from "../components/Button";
 import "./PostList.css";
 
+// 기본 이미지 URL (AWS S3)
+const DEFAULT_IMAGE_URL =
+  "https://board-image-s3-bucket.s3.ap-northeast-2.amazonaws.com/default_image.jpg";
+
 const PostMy = () => {
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -92,26 +96,58 @@ const PostMy = () => {
                 to={`/posts/${post.id}`}
                 className="post-item"
               >
-                <div className="post-header">
-                  <span className="post-category">{post.category}</span>
-                  <span className="post-date">
-                    {formatDate(
-                      post.createDate || post.createdDate || post.date
-                    )}
-                  </span>
-                </div>
-                <h2 className="post-title">{post.title}</h2>
-                <div className="post-meta">
-                  <span className="post-writer">
-                    {post.authorName ||
-                      post.writer ||
-                      post.user ||
-                      post.username}
-                  </span>
-                  <div className="post-stats">
-                    <span>조회 {post.viewCount || post.postView || 0}</span>
-                    <span>좋아요 {post.likeCount || 0}</span>
-                    <span>댓글 {post.commentCount || 0}</span>
+                <div className="post-item-content">
+                  <div className="post-item-main">
+                    <div className="post-item-header">
+                      <span className="post-category">{post.category}</span>
+                      <span className="post-date">
+                        {formatDate(
+                          post.createDate || post.createdDate || post.date
+                        )}
+                      </span>
+                    </div>
+                    <h2 className="post-title">{post.title}</h2>
+                    <div className="post-item-footer">
+                      <div className="post-author-info">
+                        <span className="post-writer">
+                          작성자:{" "}
+                          {post.authorName ||
+                            post.writer ||
+                            post.user ||
+                            post.username}
+                        </span>
+                      </div>
+                      <div className="post-stats">
+                        <span className="stat-item">
+                          <span className="stat-icon">👁</span>
+                          <span className="stat-value">
+                            {post.viewCount || post.postView || 0}
+                          </span>
+                        </span>
+                        <span className="stat-item">
+                          <span className="stat-icon">👍</span>
+                          <span className="stat-value">
+                            {post.likeCount || 0}
+                          </span>
+                        </span>
+                        <span className="stat-item">
+                          <span className="stat-icon">💬</span>
+                          <span className="stat-value">
+                            {post.commentCount || 0}
+                          </span>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="post-thumbnail">
+                    <img
+                      src={post.thumbnailUrl || DEFAULT_IMAGE_URL}
+                      alt={post.title}
+                      className="thumbnail-image"
+                      onError={e => {
+                        e.target.src = DEFAULT_IMAGE_URL;
+                      }}
+                    />
                   </div>
                 </div>
               </Link>

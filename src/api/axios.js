@@ -1,11 +1,22 @@
 import axios from "axios";
 
-//const VITE_API_URL = import.meta.env.VITE_API_URL;
-
-// 개발 환경에서는 Vite 프록시 사용, 프로덕션에서는 직접 URL 사용
-const API_BASE_URL = import.meta.env.DEV ? "" : "http://localhost:8080";
+// API Base URL 정책
+// - 개발(DEV): 브라우저의 CORS 이슈를 피하기 위해 Vite proxy("/api")를 항상 사용합니다.
+//              => baseURL을 비워두면 same-origin으로 요청되고, vite.config.js의 proxy가 백엔드로 전달합니다.
+// - 운영(PROD): 프론트가 별도 도메인이라면 VITE_API_URL을 반드시 설정하세요. (예: https://api.example.com)
+const API_BASE_URL = import.meta.env.DEV
+  ? ""
+  : (import.meta.env.VITE_API_URL ?? "").trim();
 
 const apiClient = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
+
+// refresh 전용(무한 루프 방지용: apiClient 인터셉터 미사용)
+const refreshClient = axios.create({
   baseURL: API_BASE_URL,
   headers: {
     "Content-Type": "application/json",
@@ -32,6 +43,15 @@ apiClient.interceptors.response.use(
     return response;
   },
   async error => {
+    // 네트워크/CORS/연결 문제 디버깅용(응답이 아예 없는 케이스)
+    if (!error.response) {
+      console.error("API 요청 실패(응답 없음):", {
+        message: error.message,
+        url: error.config?.url,
+        baseURL: error.config?.baseURL,
+        method: error.config?.method,
+      });
+    }
     const originalRequest = error.config;
 
     // 403 에러는 권한 문제이므로 토큰 재발급 시도하지 않음
@@ -59,8 +79,7 @@ apiClient.interceptors.response.use(
         const refreshToken = localStorage.getItem("refreshToken");
         if (refreshToken) {
           console.log("토큰 재발급 시도 중...");
-          const refreshUrl = API_BASE_URL || "http://localhost:8080";
-          const response = await axios.post(`${refreshUrl}/api/user/refresh`, {
+          const response = await refreshClient.post("/api/user/refresh", {
             refreshToken: refreshToken,
           });
 

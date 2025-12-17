@@ -8,7 +8,8 @@ import Input from "../components/Input";
 import "./PostList.css";
 
 // 기본 이미지 URL (AWS S3)
-const DEFAULT_IMAGE_URL = "https://board-image-s3-bucket.s3.ap-northeast-2.amazonaws.com/default_image.jpg";
+const DEFAULT_IMAGE_URL =
+  "https://board-image-s3-bucket.s3.ap-northeast-2.amazonaws.com/default_image.jpg";
 
 // 카테고리 목록 (메뉴판)
 const CATEGORIES = [
@@ -31,7 +32,7 @@ const PostList = () => {
 
   useEffect(() => {
     const abortController = new AbortController();
-    
+
     const loadPosts = async () => {
       try {
         setLoading(true);
@@ -45,7 +46,7 @@ const PostList = () => {
         } else {
           response = await postAPI.getPostList(page, 10);
         }
-        
+
         if (!abortController.signal.aborted) {
           setPosts(response.content || []);
           setTotalPages(response.totalPages || 0);
@@ -60,15 +61,19 @@ const PostList = () => {
         }
       }
     };
-    
+
     loadPosts();
-    
+
     return () => {
       abortController.abort();
     };
   }, [page, selectedCategory]);
 
-
+  /**
+   * 게시글 검색 핸들러
+   * 검색어를 입력받아 게시글을 검색하고 결과를 표시
+   * @param {Event} e - 폼 제출 이벤트
+   */
   const handleSearch = async e => {
     e.preventDefault();
     if (!searchQuery.trim()) {
@@ -81,11 +86,111 @@ const PostList = () => {
     try {
       setLoading(true);
       const results = await postAPI.searchPosts(searchQuery);
-      setPosts(results || []);
-      setTotalPages(0);
+
+      // 검색 결과 디버깅을 위한 로그
+      console.log("검색 결과 원본:", results);
+
+      // 검색 결과가 배열인지 객체인지 확인
+      let searchResults = [];
+      if (Array.isArray(results)) {
+        // 직접 배열로 반환되는 경우
+        searchResults = results;
+      } else if (results && typeof results === "object") {
+        // 객체 안에 배열이 있는 경우 (다양한 필드명 대응)
+        searchResults =
+          results.content ||
+          results.posts ||
+          results.data ||
+          results.results ||
+          [];
+      }
+
+      console.log("검색 결과 배열:", searchResults);
+
+      // 검색 결과 데이터 정규화 (필드명 통일)
+      const normalizedResults = searchResults.map((post, index) => {
+        // 이미지 URL 추출 로직 개선
+        let thumbnailUrl = null;
+
+        // 1. thumbnailUrl 필드 확인
+        if (post.thumbnailUrl) {
+          thumbnailUrl = post.thumbnailUrl;
+        }
+        // 2. imageUrl이 배열인 경우 첫 번째 이미지 사용
+        else if (
+          post.imageUrl &&
+          Array.isArray(post.imageUrl) &&
+          post.imageUrl.length > 0
+        ) {
+          thumbnailUrl = post.imageUrl[0];
+        }
+        // 3. imageUrl이 문자열인 경우 직접 사용
+        else if (post.imageUrl && typeof post.imageUrl === "string") {
+          thumbnailUrl = post.imageUrl;
+        }
+        // 4. images 배열 확인
+        else if (
+          post.images &&
+          Array.isArray(post.images) &&
+          post.images.length > 0
+        ) {
+          thumbnailUrl = post.images[0];
+        }
+        // 5. image 필드 확인
+        else if (post.image) {
+          thumbnailUrl = post.image;
+        }
+
+        // ID 필드 통일 (게시글 상세 페이지 이동을 위해 필수)
+        const postId = post.id || post.postId || post.post_id || null;
+
+        const normalized = {
+          ...post,
+          // ID 필드 통일 (상세 페이지 이동을 위해 필수)
+          id: postId,
+          // 작성자 필드명 통일
+          writer:
+            post.writer ||
+            post.authorName ||
+            post.author ||
+            post.user ||
+            post.username ||
+            "알 수 없음",
+          // 조회수 필드명 통일
+          postView: post.postView || post.viewCount || post.views || 0,
+          // 좋아요 필드명 통일
+          likeCount: post.likeCount || post.likes || post.totalLikes || 0,
+          // 댓글 수 필드명 통일
+          commentCount:
+            post.commentCount || post.comments || post.totalComments || 0,
+          // 썸네일 URL 필드명 통일
+          thumbnailUrl: thumbnailUrl,
+          // 날짜 필드명 통일
+          createdDate:
+            post.createdDate ||
+            post.createDate ||
+            post.createdAt ||
+            post.date ||
+            post.created_at,
+          // 카테고리 필드명 통일
+          category: post.category || post.categoryName || "알 수 없음",
+        };
+
+        // 디버깅을 위한 로그
+        if (index === 0) {
+          console.log("첫 번째 게시글 정규화 결과:", normalized);
+          console.log("이미지 URL:", normalized.thumbnailUrl);
+        }
+
+        return normalized;
+      });
+
+      setPosts(normalizedResults);
+      setTotalPages(0); // 검색 결과는 페이지네이션 없음
       setSelectedCategory(null); // 검색 시 카테고리 필터 초기화
     } catch (error) {
       console.error("검색 실패:", error);
+      setPosts([]); // 에러 발생 시 빈 배열로 설정
     } finally {
       setLoading(false);
     }
@@ -148,7 +253,7 @@ const PostList = () => {
             placeholder="게시글 검색..."
             style={{ flex: 1 }}
           />
-          <Button type="submit" variant="primary">
+          <Button type="submit" variant="primary" className="search-button">
             검색
           </Button>
         </form>
@@ -160,54 +265,181 @@ const PostList = () => {
         ) : (
           <>
             <div className="post-list">
-              {posts.map(post => (
-                <Link
-                  key={post.id}
-                  to={`/posts/${post.id}`}
-                  className="post-item"
-                >
-                  <div className="post-item-content">
-                    <div className="post-item-main">
-                      <div className="post-item-header">
-                        <span className="post-category">{post.category}</span>
-                        <span className="post-date">
-                          {formatDate(post.createdDate)}
-                        </span>
-                      </div>
-                      <h2 className="post-title">{post.title}</h2>
-                      <div className="post-item-footer">
-                        <div className="post-author-info">
-                          <span className="post-writer">작성자: {post.writer}</span>
+              {posts.map(post => {
+                // 게시글 ID 확인 (상세 페이지 이동을 위해 필수)
+                const postId = post.id || post.postId || post.post_id;
+
+                // ID가 없으면 클릭 불가능한 div로 표시
+                if (!postId) {
+                  console.warn("게시글 ID가 없습니다:", post);
+                  return (
+                    <div
+                      key={`no-id-${post.title}`}
+                      className="post-item"
+                      style={{ opacity: 0.6 }}
+                    >
+                      <div className="post-item-content">
+                        <div className="post-item-main">
+                          <div className="post-item-header">
+                            <span className="post-category">
+                              {post.category || "알 수 없음"}
+                            </span>
+                            <span className="post-date">
+                              {formatDate(post.createdDate || post.createdAt)}
+                            </span>
+                          </div>
+                          <h2 className="post-title">
+                            {post.title || "제목 없음"}
+                          </h2>
+                          <div className="post-item-footer">
+                            <div className="post-author-info">
+                              <span className="post-writer">
+                                작성자:{" "}
+                                {post.writer || post.author || "알 수 없음"}
+                              </span>
+                            </div>
+                            <div className="post-stats">
+                              <span className="stat-item">
+                                <span className="stat-icon">👁</span>
+                                <span className="stat-value">
+                                  {post.postView ||
+                                    post.viewCount ||
+                                    post.views ||
+                                    0}
+                                </span>
+                              </span>
+                              <span className="stat-item">
+                                <span className="stat-icon">👍</span>
+                                <span className="stat-value">
+                                  {post.likeCount ||
+                                    post.likes ||
+                                    post.totalLikes ||
+                                    0}
+                                </span>
+                              </span>
+                              <span className="stat-item">
+                                <span className="stat-icon">💬</span>
+                                <span className="stat-value">
+                                  {post.commentCount ||
+                                    post.comments ||
+                                    post.totalComments ||
+                                    0}
+                                </span>
+                              </span>
+                            </div>
+                          </div>
                         </div>
-                        <div className="post-stats">
-                          <span className="stat-item">
-                            <span className="stat-icon">👁</span>
-                            <span className="stat-value">{post.postView}</span>
-                          </span>
-                          <span className="stat-item">
-                            <span className="stat-icon">👍</span>
-                            <span className="stat-value">{post.likeCount}</span>
-                          </span>
-                          <span className="stat-item">
-                            <span className="stat-icon">💬</span>
-                            <span className="stat-value">{post.commentCount}</span>
-                          </span>
+                        <div className="post-thumbnail">
+                          <img
+                            src={
+                              post.thumbnailUrl ||
+                              (post.imageUrl &&
+                              Array.isArray(post.imageUrl) &&
+                              post.imageUrl.length > 0
+                                ? post.imageUrl[0]
+                                : post.imageUrl) ||
+                              DEFAULT_IMAGE_URL
+                            }
+                            alt={post.title || "게시글 이미지"}
+                            className="thumbnail-image"
+                            onError={e => {
+                              e.target.src = DEFAULT_IMAGE_URL;
+                            }}
+                          />
                         </div>
                       </div>
                     </div>
-                    <div className="post-thumbnail">
-                      <img 
-                        src={post.thumbnailUrl || DEFAULT_IMAGE_URL} 
-                        alt={post.title}
-                        className="thumbnail-image"
-                        onError={(e) => {
-                          e.target.src = DEFAULT_IMAGE_URL;
-                        }}
-                      />
+                  );
+                }
+
+                return (
+                  <Link
+                    key={postId}
+                    to={`/posts/${postId}`}
+                    className="post-item"
+                  >
+                    <div className="post-item-content">
+                      <div className="post-item-main">
+                        <div className="post-item-header">
+                          <span className="post-category">
+                            {post.category || "알 수 없음"}
+                          </span>
+                          <span className="post-date">
+                            {formatDate(post.createdDate || post.createdAt)}
+                          </span>
+                        </div>
+                        <h2 className="post-title">
+                          {post.title || "제목 없음"}
+                        </h2>
+                        <div className="post-item-footer">
+                          <div className="post-author-info">
+                            <span className="post-writer">
+                              작성자:{" "}
+                              {post.writer || post.author || "알 수 없음"}
+                            </span>
+                          </div>
+                          <div className="post-stats">
+                            <span className="stat-item">
+                              <span className="stat-icon">👁</span>
+                              <span className="stat-value">
+                                {post.postView ||
+                                  post.viewCount ||
+                                  post.views ||
+                                  0}
+                              </span>
+                            </span>
+                            <span className="stat-item">
+                              <span className="stat-icon">👍</span>
+                              <span className="stat-value">
+                                {post.likeCount ||
+                                  post.likes ||
+                                  post.totalLikes ||
+                                  0}
+                              </span>
+                            </span>
+                            <span className="stat-item">
+                              <span className="stat-icon">💬</span>
+                              <span className="stat-value">
+                                {post.commentCount ||
+                                  post.comments ||
+                                  post.totalComments ||
+                                  0}
+                              </span>
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="post-thumbnail">
+                        <img
+                          src={
+                            post.thumbnailUrl ||
+                            (post.imageUrl &&
+                            Array.isArray(post.imageUrl) &&
+                            post.imageUrl.length > 0
+                              ? post.imageUrl[0]
+                              : typeof post.imageUrl === "string"
+                              ? post.imageUrl
+                              : null) ||
+                            (post.images &&
+                            Array.isArray(post.images) &&
+                            post.images.length > 0
+                              ? post.images[0]
+                              : null) ||
+                            post.image ||
+                            DEFAULT_IMAGE_URL
+                          }
+                          alt={post.title || "게시글 이미지"}
+                          className="thumbnail-image"
+                          onError={e => {
+                            console.warn("이미지 로드 실패:", e.target.src);
+                            e.target.src = DEFAULT_IMAGE_URL;
+                          }}
+                        />
+                      </div>
                     </div>
-                  </div>
-                </Link>
-              ))}
+                  </Link>
+                );
+              })}
             </div>
 
             {totalPages > 0 && (
@@ -217,17 +449,45 @@ const PostList = () => {
                   disabled={page === 0}
                   onClick={() => setPage(page - 1)}
                 >
-                  이전
+                  &lt;
                 </Button>
-                <span className="page-info">
-                  {page + 1} / {totalPages}
-                </span>
+                <div className="page-numbers">
+                  {Array.from({ length: totalPages }, (_, i) => i).map(
+                    pageNum => {
+                      // 현재 페이지 주변 2페이지씩만 표시
+                      if (
+                        pageNum === 0 ||
+                        pageNum === totalPages - 1 ||
+                        (pageNum >= page - 2 && pageNum <= page + 2)
+                      ) {
+                        return (
+                          <button
+                            key={pageNum}
+                            className={`page-number ${
+                              pageNum === page ? "active" : ""
+                            }`}
+                            onClick={() => setPage(pageNum)}
+                          >
+                            {pageNum + 1}
+                          </button>
+                        );
+                      } else if (pageNum === page - 3 || pageNum === page + 3) {
+                        return (
+                          <span key={pageNum} className="page-ellipsis">
+                            ...
+                          </span>
+                        );
+                      }
+                      return null;
+                    }
+                  )}
+                </div>
                 <Button
                   variant="outline"
                   disabled={page >= totalPages - 1}
                   onClick={() => setPage(page + 1)}
                 >
-                  다음
+                  &gt;
                 </Button>
               </div>
             )}

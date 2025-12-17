@@ -1,13 +1,16 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { adminAPI } from "../api/admin";
+import { postAPI } from "../api/post";
+import { commentAPI } from "../api/comment";
 import { useAuth } from "../context/AuthContext";
 import Layout from "../components/Layout";
 import Button from "../components/Button";
 import "./Admin.css";
 
 // 기본 이미지 URL (AWS S3)
-const DEFAULT_IMAGE_URL = "https://board-image-s3-bucket.s3.ap-northeast-2.amazonaws.com/default_image.jpg";
+const DEFAULT_IMAGE_URL =
+  "https://board-image-s3-bucket.s3.ap-northeast-2.amazonaws.com/default_image.jpg";
 
 const Admin = () => {
   const { user, isAuthenticated } = useAuth();
@@ -24,6 +27,9 @@ const Admin = () => {
   const [statusFilter, setStatusFilter] = useState("ALL"); // ALL, 대기, 처리중, 완료
   const [typeFilter, setTypeFilter] = useState("ALL"); // ALL, 게시글, 댓글
   const [updatingStatus, setUpdatingStatus] = useState(false);
+  const [deleting, setDeleting] = useState(false); // 삭제 중 상태
+  const [postDeletedStatus, setPostDeletedStatus] = useState(null); // 게시글 삭제 여부 (null: 확인 중, true: 삭제됨, false: 존재함)
+  const [commentDeletedStatus, setCommentDeletedStatus] = useState(null); // 댓글 삭제 여부
   const pageSize = 10;
 
   // 상태 문자열을 statusId로 매핑 (백엔드 기준)
@@ -75,17 +81,29 @@ const Admin = () => {
       let page = 0;
       let totalPages = 1;
 
-      // 첫 페이지로 전체 페이지 수 확인
-      const firstResponse = await adminAPI.getReportList(0, 100);
-      totalPages = firstResponse.totalPages || 1;
-      allData = [...(firstResponse.content || [])];
+      try {
+        // 첫 페이지로 전체 페이지 수 확인
+        const firstResponse = await adminAPI.getReportList(0, 100);
+        totalPages = firstResponse.totalPages || 1;
+        allData = [...(firstResponse.content || [])];
 
-      // 나머지 페이지들 가져오기
-      for (page = 1; page < totalPages && page < 100; page++) {
-        // 최대 100페이지 (안전장치)
-        const response = await adminAPI.getReportList(page, 100);
-        const content = response.content || [];
-        allData = [...allData, ...content];
+        // 나머지 페이지들 가져오기
+        for (page = 1; page < totalPages && page < 100; page++) {
+          // 최대 100페이지 (안전장치)
+          try {
+            const response = await adminAPI.getReportList(page, 100);
+            const content = response.content || [];
+            allData = [...allData, ...content];
+          } catch (pageError) {
+            console.error(`페이지 ${page} 조회 실패 (무시):`, pageError);
+            // 개별 페이지 실패는 무시하고 계속 진행
+            break;
+          }
+        }
+      } catch (firstPageError) {
+        console.error("첫 페이지 조회 실패:", firstPageError);
+        // 첫 페이지 실패 시 빈 배열 반환
+        allData = [];
       }
 
       console.log("통계용 데이터 로드 완료:", allData.length, "개");
@@ -117,9 +135,14 @@ const Admin = () => {
       setLoading(true);
       setError(null);
 
-      // 통계용 전체 데이터는 항상 별도로 조회 (필터와 무관하게)
-      // 병렬로 처리하여 성능 향상
-      const statsPromise = fetchAllReportsForStats();
+      // 통계용 전체 데이터는 별도로 조회 (실패해도 메인 목록은 표시)
+      let statsPromise = Promise.resolve();
+      try {
+        statsPromise = fetchAllReportsForStats();
+      } catch (statsError) {
+        console.error("통계 데이터 조회 실패 (무시):", statsError);
+        // 통계 데이터 실패는 무시하고 계속 진행
+      }
 
       // 필터에 따라 적절한 API 호출
       let response;
@@ -127,88 +150,169 @@ const Admin = () => {
       const statusId =
         statusFilter !== "ALL" ? getStatusId(statusFilter) : null;
 
-      // 게시글/댓글 필터만 있고 상태 필터가 없는 경우 - 전체 데이터를 가져와서 클라이언트 사이드 필터링
+      // 게시글/댓글 필터만 있고 상태 필터가 없는 경우
+      // - 기존에는 size=10000으로 한 번에 가져와 500을 유발할 수 있어(백엔드/DB 페이징 제한),
+      //   안전하게 여러 페이지로 나눠 가져온 뒤 클라이언트 사이드 필터링합니다.
       const needsClientSideFiltering =
         (typeFilter === "게시글" || typeFilter === "댓글") && statusId === null;
 
       if (needsClientSideFiltering) {
-        // 전체 데이터를 가져와서 필터링
-        const allResponse = await adminAPI.getReportList(0, 10000);
-        const allData = allResponse.content || [];
+        try {
+          // 전체 데이터를 페이지 단위로 가져와서 필터링
+          const fetchAllReportsPaged = async () => {
+            const pageChunkSize = 100; // 백엔드 부담을 줄이기 위한 안전한 크기
+            const first = await adminAPI.getReportList(0, pageChunkSize);
+            const total = first.totalPages || 1;
+            let all = [...(first.content || [])];
 
-        // 필터링 적용
-        let filtered = allData;
-        if (typeFilter === "게시글") {
-          filtered = allData.filter(
-            report => report.title !== null && report.title !== undefined
-          );
-        } else if (typeFilter === "댓글") {
-          filtered = allData.filter(
-            report => report.comment !== null && report.comment !== undefined
-          );
+            // 최대 100페이지 안전장치 (= 최대 10,000건)
+            for (let p = 1; p < total && p < 100; p++) {
+              const r = await adminAPI.getReportList(p, pageChunkSize);
+              all = [...all, ...(r.content || [])];
+            }
+            return all;
+          };
+
+          const allData = await fetchAllReportsPaged();
+
+          // 필터링 적용
+          let filtered = allData;
+          if (typeFilter === "게시글") {
+            filtered = allData.filter(
+              report => report.title !== null && report.title !== undefined
+            );
+          } else if (typeFilter === "댓글") {
+            filtered = allData.filter(
+              report => report.comment !== null && report.comment !== undefined
+            );
+          }
+
+          setFilteredAllReports(filtered);
+
+          // 페이지네이션 처리
+          const total = filtered.length;
+          const startIndex = currentPage * pageSize;
+          const endIndex = startIndex + pageSize;
+          const paginatedReports = filtered.slice(startIndex, endIndex);
+
+          setReports(paginatedReports);
+          setTotalPages(Math.ceil(total / pageSize));
+          setTotalElements(total);
+        } catch (filterError) {
+          console.error("필터링된 신고 목록 조회 실패:", filterError);
+          console.error("필터링 에러 상세:", {
+            message: filterError.message,
+            response: filterError.response,
+            status: filterError.response?.status,
+            data: filterError.response?.data,
+          });
+          // 필터링 실패 시 빈 배열로 설정
+          setReports([]);
+          setTotalPages(0);
+          setTotalElements(0);
+          setError("신고 목록을 불러오는데 실패했습니다.");
         }
-
-        setFilteredAllReports(filtered);
-
-        // 페이지네이션 처리
-        const total = filtered.length;
-        const startIndex = currentPage * pageSize;
-        const endIndex = startIndex + pageSize;
-        const paginatedReports = filtered.slice(startIndex, endIndex);
-
-        setReports(paginatedReports);
-        setTotalPages(Math.ceil(total / pageSize));
-        setTotalElements(total);
       } else {
-        // 백엔드 API를 사용하는 경우
-        if (typeFilter === "게시글") {
-          // 게시글 + 상태 필터
-          response = await adminAPI.getPostReportList(
-            currentPage,
-            pageSize,
-            statusId
-          );
-        } else if (typeFilter === "댓글") {
-          // 댓글 + 상태 필터
-          response = await adminAPI.getCommentReportList(
-            currentPage,
-            pageSize,
-            statusId
-          );
-        } else {
-          // 전체 (유형 필터 없음)
-          if (statusId !== null) {
-            // 상태 필터만 있는 경우 - 백엔드 API 사용
-            response = await adminAPI.getReportListByStatus(
+        try {
+          // 백엔드 API를 사용하는 경우
+          if (typeFilter === "게시글") {
+            // 게시글 + 상태 필터
+            response = await adminAPI.getPostReportList(
+              currentPage,
+              pageSize,
+              statusId
+            );
+          } else if (typeFilter === "댓글") {
+            // 댓글 + 상태 필터
+            response = await adminAPI.getCommentReportList(
               currentPage,
               pageSize,
               statusId
             );
           } else {
-            // 필터 없음
-            response = await adminAPI.getReportList(currentPage, pageSize);
+            // 전체 (유형 필터 없음)
+            if (statusId !== null) {
+              // 상태 필터만 있는 경우 - 백엔드 API 사용
+              response = await adminAPI.getReportListByStatus(
+                currentPage,
+                pageSize,
+                statusId
+              );
+            } else {
+              // 필터 없음
+              response = await adminAPI.getReportList(currentPage, pageSize);
+            }
           }
-        }
 
-        setReports(response.content || []);
-        setTotalPages(response.totalPages || 0);
-        setTotalElements(response.totalElements || 0);
+          setReports(response.content || []);
+          setTotalPages(response.totalPages || 0);
+          setTotalElements(response.totalElements || 0);
+        } catch (apiError) {
+          console.error("신고 목록 API 호출 실패:", apiError);
+          console.error("API 에러 상세:", {
+            message: apiError.message,
+            response: apiError.response,
+            status: apiError.response?.status,
+            data: apiError.response?.data,
+          });
+          // API 호출 실패 시 빈 배열로 설정
+          setReports([]);
+          setTotalPages(0);
+          setTotalElements(0);
+          setError("신고 목록을 불러오는데 실패했습니다.");
+        }
       }
 
-      // 통계용 데이터 조회 완료 대기
-      await statsPromise;
+      // 통계용 데이터 조회 완료 대기 (실패해도 무시)
+      try {
+        await statsPromise;
+      } catch (statsError) {
+        console.error("통계 데이터 조회 실패 (무시):", statsError);
+      }
     } catch (error) {
-      console.error("신고 목록 조회 실패:", error);
+      console.error("신고 목록 조회 중 예상치 못한 에러:", error);
       setError("신고 목록을 불러오는데 실패했습니다.");
+      // 최소한 빈 상태로 설정
+      setReports([]);
+      setTotalPages(0);
+      setTotalElements(0);
     } finally {
       setLoading(false);
     }
   };
 
+  /**
+   * 신고 상세 정보 조회 및 게시글/댓글 삭제 여부 확인
+   * @param {number} reportId - 신고 ID
+   */
   const handleReportClick = async reportId => {
     try {
       const detail = await adminAPI.getReportDetail(reportId);
+      console.log("신고 상세 정보:", detail); // 디버깅용
       setSelectedReport(detail);
+
+      /**
+       * 백엔드(`ReportDetailDTO`) 기준 삭제 여부 판별
+       * - `detail.postInfo.isDeleted`가 항상 내려옴
+       * - 게시글 신고면: `postInfo.isDeleted` = 게시글 삭제 여부
+       * - 댓글 신고면: `postInfo.isDeleted` = 댓글 삭제 여부 (현재 백엔드 구현)
+       * - 프론트에서 postId/commentId를 알 수 없으므로 추가 조회로 판별하지 않음
+       */
+      const isCommentReport = !!detail.comment; // 댓글 신고면 comment 문자열이 존재(빈문자열이면 게시글 신고로 간주)
+      const deletedFlag =
+        detail?.postInfo?.isDeleted !== undefined
+          ? detail.postInfo.isDeleted
+          : detail?.postInfo?.deleted !== undefined
+          ? detail.postInfo.deleted
+          : null;
+
+      if (isCommentReport) {
+        setPostDeletedStatus(null);
+        setCommentDeletedStatus(deletedFlag);
+      } else {
+        setPostDeletedStatus(deletedFlag);
+        setCommentDeletedStatus(null);
+      }
     } catch (error) {
       console.error("신고 상세 조회 실패:", error);
       alert("신고 상세 정보를 불러오는데 실패했습니다.");
@@ -237,6 +341,96 @@ const Admin = () => {
       alert(errorMessage);
     } finally {
       setUpdatingStatus(false);
+    }
+  };
+
+  /**
+   * 게시글 삭제 핸들러
+   * 신고된 게시글을 삭제하고 신고 상태를 완료로 변경
+   */
+  const handleDeletePost = async () => {
+    // 백엔드 관리자 삭제 컨트롤러는 reportId를 받는다.
+    const reportId = selectedReport?.reportId;
+    if (!reportId) {
+      console.error("신고 ID(reportId)를 찾을 수 없습니다:", selectedReport);
+      alert("신고 ID를 찾을 수 없습니다.");
+      return;
+    }
+
+    const confirmMessage = `정말 이 게시글을 삭제하시겠습니까?\n\n삭제된 게시글은 복구할 수 없습니다.`;
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    try {
+      setDeleting(true);
+
+      // 관리자 삭제 전용 API 사용 (reportId 기반)
+      await adminAPI.adminDelete(reportId);
+
+      // 신고 상태를 완료로 변경
+      const statusCode = getStatusCode("완료");
+      await adminAPI.updateReportStatus(selectedReport.reportId, statusCode);
+
+      alert("게시글이 삭제되었고 신고 상태가 완료로 변경되었습니다.");
+      setPostDeletedStatus(true); // 삭제됨 상태로 업데이트
+      setSelectedReport(null);
+      setPostDeletedStatus(null); // 상태 초기화
+      fetchReports(); // 목록 새로고침
+    } catch (error) {
+      console.error("게시글 삭제 실패:", error);
+      const errorMessage =
+        error.response?.data?.message ||
+        error.message ||
+        "게시글 삭제에 실패했습니다.";
+      alert(errorMessage);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  /**
+   * 댓글 삭제 핸들러
+   * 신고된 댓글을 삭제하고 신고 상태를 완료로 변경
+   */
+  const handleDeleteComment = async () => {
+    // 백엔드 관리자 삭제 컨트롤러는 reportId를 받는다.
+    const reportId = selectedReport?.reportId;
+    if (!reportId) {
+      console.error("신고 ID(reportId)를 찾을 수 없습니다:", selectedReport);
+      alert("신고 ID를 찾을 수 없습니다.");
+      return;
+    }
+
+    const confirmMessage = `정말 이 댓글을 삭제하시겠습니까?\n\n삭제된 댓글은 복구할 수 없습니다.`;
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    try {
+      setDeleting(true);
+
+      // 관리자 삭제 전용 API 사용 (reportId 기반)
+      await adminAPI.adminDelete(reportId);
+
+      // 신고 상태를 완료로 변경
+      const statusCode = getStatusCode("완료");
+      await adminAPI.updateReportStatus(selectedReport.reportId, statusCode);
+
+      alert("댓글이 삭제되었고 신고 상태가 완료로 변경되었습니다.");
+      setCommentDeletedStatus(true); // 삭제됨 상태로 업데이트
+      setSelectedReport(null);
+      setCommentDeletedStatus(null); // 상태 초기화
+      fetchReports(); // 목록 새로고침
+    } catch (error) {
+      console.error("댓글 삭제 실패:", error);
+      const errorMessage =
+        error.response?.data?.message ||
+        error.message ||
+        "댓글 삭제에 실패했습니다.";
+      alert(errorMessage);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -506,11 +700,43 @@ const Admin = () => {
                     }
                     disabled={currentPage === 0}
                   >
-                    이전
+                    &lt;
                   </Button>
-                  <span className="page-info">
-                    {currentPage + 1} / {totalPages}
-                  </span>
+                  <div className="page-numbers">
+                    {Array.from({ length: totalPages }, (_, i) => i).map(
+                      pageNum => {
+                        // 현재 페이지 주변 2페이지씩만 표시
+                        if (
+                          pageNum === 0 ||
+                          pageNum === totalPages - 1 ||
+                          (pageNum >= currentPage - 2 &&
+                            pageNum <= currentPage + 2)
+                        ) {
+                          return (
+                            <button
+                              key={pageNum}
+                              className={`page-number ${
+                                pageNum === currentPage ? "active" : ""
+                              }`}
+                              onClick={() => setCurrentPage(pageNum)}
+                            >
+                              {pageNum + 1}
+                            </button>
+                          );
+                        } else if (
+                          pageNum === currentPage - 3 ||
+                          pageNum === currentPage + 3
+                        ) {
+                          return (
+                            <span key={pageNum} className="page-ellipsis">
+                              ...
+                            </span>
+                          );
+                        }
+                        return null;
+                      }
+                    )}
+                  </div>
                   <Button
                     variant="outline"
                     onClick={() =>
@@ -518,7 +744,7 @@ const Admin = () => {
                     }
                     disabled={currentPage >= totalPages - 1}
                   >
-                    다음
+                    &gt;
                   </Button>
                 </div>
               )}
@@ -528,7 +754,11 @@ const Admin = () => {
             {selectedReport && (
               <div
                 className="report-detail-modal-overlay"
-                onClick={() => setSelectedReport(null)}
+                onClick={() => {
+                  setSelectedReport(null);
+                  setPostDeletedStatus(null); // 삭제 여부 상태 초기화
+                  setCommentDeletedStatus(null); // 삭제 여부 상태 초기화
+                }}
               >
                 <div
                   className="report-detail-modal"
@@ -538,7 +768,11 @@ const Admin = () => {
                     <h2>신고 상세 정보</h2>
                     <button
                       className="modal-close"
-                      onClick={() => setSelectedReport(null)}
+                      onClick={() => {
+                        setSelectedReport(null);
+                        setPostDeletedStatus(null); // 삭제 여부 상태 초기화
+                        setCommentDeletedStatus(null); // 삭제 여부 상태 초기화
+                      }}
                     >
                       ×
                     </button>
@@ -592,7 +826,42 @@ const Admin = () => {
                     {/* 게시글 정보 */}
                     {selectedReport.postInfo && (
                       <div className="detail-section">
-                        <h3 className="section-label">게시글 정보</h3>
+                        <h3 className="section-label">
+                          게시글 정보
+                          {/* 게시글 삭제 여부 표시 (확인중 배지 제거: 값이 확정된 경우에만 표시) */}
+                          {postDeletedStatus === true && (
+                            <span
+                              className="deleted-badge"
+                              style={{
+                                marginLeft: "var(--spacing-md)",
+                                padding: "4px 12px",
+                                backgroundColor: "#ef4444",
+                                color: "white",
+                                borderRadius: "12px",
+                                fontSize: "0.75rem",
+                                fontWeight: 600,
+                              }}
+                            >
+                              삭제됨
+                            </span>
+                          )}
+                          {postDeletedStatus === false && (
+                            <span
+                              className="active-badge"
+                              style={{
+                                marginLeft: "var(--spacing-md)",
+                                padding: "4px 12px",
+                                backgroundColor: "#10b981",
+                                color: "white",
+                                borderRadius: "12px",
+                                fontSize: "0.75rem",
+                                fontWeight: 600,
+                              }}
+                            >
+                              존재함
+                            </span>
+                          )}
+                        </h3>
                         <div className="post-detail-card">
                           <div className="post-detail-item">
                             <span className="detail-label">작성자:</span>
@@ -670,7 +939,42 @@ const Admin = () => {
                     {/* 댓글 정보 */}
                     {selectedReport.comment && (
                       <div className="detail-section">
-                        <h3 className="section-label">댓글 정보</h3>
+                        <h3 className="section-label">
+                          댓글 정보
+                          {/* 댓글 삭제 여부 표시 (확인중 배지 제거: 값이 확정된 경우에만 표시) */}
+                          {commentDeletedStatus === true && (
+                            <span
+                              className="deleted-badge"
+                              style={{
+                                marginLeft: "var(--spacing-md)",
+                                padding: "4px 12px",
+                                backgroundColor: "#ef4444",
+                                color: "white",
+                                borderRadius: "12px",
+                                fontSize: "0.75rem",
+                                fontWeight: 600,
+                              }}
+                            >
+                              삭제됨
+                            </span>
+                          )}
+                          {commentDeletedStatus === false && (
+                            <span
+                              className="active-badge"
+                              style={{
+                                marginLeft: "var(--spacing-md)",
+                                padding: "4px 12px",
+                                backgroundColor: "#10b981",
+                                color: "white",
+                                borderRadius: "12px",
+                                fontSize: "0.75rem",
+                                fontWeight: 600,
+                              }}
+                            >
+                              존재함
+                            </span>
+                          )}
+                        </h3>
                         <div className="comment-detail-card">
                           <div className="comment-content">
                             {selectedReport.comment}
@@ -679,9 +983,46 @@ const Admin = () => {
                       </div>
                     )}
 
-                    {/* 상태 변경 */}
+                    {/* 삭제 및 상태 변경 */}
                     <div className="detail-section">
-                      <h3 className="section-label">상태 변경</h3>
+                      <h3 className="section-label">삭제 및 상태 변경</h3>
+
+                      {/* 삭제 버튼 */}
+                      <div
+                        className="delete-actions"
+                        style={{ marginBottom: "var(--spacing-lg)" }}
+                      >
+                        {selectedReport.postInfo && (
+                          <Button
+                            variant="outline"
+                            onClick={handleDeletePost}
+                            disabled={deleting || updatingStatus}
+                            style={{
+                              flex: 1,
+                              borderColor: "#ef4444",
+                              color: "#ef4444",
+                            }}
+                          >
+                            {deleting ? "삭제 중..." : "게시글 삭제"}
+                          </Button>
+                        )}
+                        {selectedReport.comment && (
+                          <Button
+                            variant="outline"
+                            onClick={handleDeleteComment}
+                            disabled={deleting || updatingStatus}
+                            style={{
+                              flex: 1,
+                              borderColor: "#ef4444",
+                              color: "#ef4444",
+                            }}
+                          >
+                            {deleting ? "삭제 중..." : "댓글 삭제"}
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* 상태 변경 버튼 */}
                       <div className="status-actions">
                         <Button
                           variant="outline"
@@ -691,7 +1032,8 @@ const Admin = () => {
                           disabled={
                             selectedReport.summary?.status === "접수 대기" ||
                             selectedReport.summary?.status === "대기" ||
-                            updatingStatus
+                            updatingStatus ||
+                            deleting
                           }
                         >
                           대기
@@ -707,7 +1049,8 @@ const Admin = () => {
                           disabled={
                             selectedReport.summary?.status === "처리 중" ||
                             selectedReport.summary?.status === "처리중" ||
-                            updatingStatus
+                            updatingStatus ||
+                            deleting
                           }
                         >
                           처리중
@@ -720,7 +1063,8 @@ const Admin = () => {
                           disabled={
                             selectedReport.summary?.status === "처리 완료" ||
                             selectedReport.summary?.status === "완료" ||
-                            updatingStatus
+                            updatingStatus ||
+                            deleting
                           }
                         >
                           완료
@@ -732,7 +1076,8 @@ const Admin = () => {
                           }
                           disabled={
                             selectedReport.summary?.status === "반려" ||
-                            updatingStatus
+                            updatingStatus ||
+                            deleting
                           }
                           style={{ borderColor: "#ef4444", color: "#ef4444" }}
                         >

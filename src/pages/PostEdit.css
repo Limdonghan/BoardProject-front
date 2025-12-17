@@ -38,6 +38,12 @@
   color: var(--text-primary);
 }
 
+.image-count {
+  color: var(--primary-color);
+  font-weight: 600;
+  margin-left: var(--spacing-xs);
+}
+
 .select-input {
   width: 100%;
   padding: var(--spacing-md);
@@ -96,7 +102,19 @@
   }
 }
 
-.file-input {
+/* 파일 input 숨김 처리 - 커스텀 버튼 사용 */
+.file-input-hidden {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+  z-index: -1;
+}
+
+/* 커스텀 파일 선택 버튼 */
+.file-input-label {
+  display: inline-block;
   width: 100%;
   padding: var(--spacing-md);
   border: 1px solid var(--border-color);
@@ -106,15 +124,18 @@
   color: var(--text-primary);
   cursor: pointer;
   transition: all 0.2s ease;
+  text-align: center;
+  font-weight: 500;
 }
 
-.file-input:hover {
+.file-input-label:hover {
   border-color: var(--primary-color);
+  background-color: rgba(102, 126, 234, 0.05);
+  color: var(--primary-color);
 }
 
-.file-input:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+.file-input-label:active {
+  transform: scale(0.98);
 }
 
 .existing-images-container,
@@ -192,4 +213,3 @@
   font-size: 0.875rem;
   text-align: center;
 }
-

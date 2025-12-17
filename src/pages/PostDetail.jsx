@@ -12,7 +12,8 @@ import ReportModal from "../components/ReportModal";
 import "./PostDetail.css";
 
 // 기본 이미지 URL (AWS S3)
-const DEFAULT_IMAGE_URL = "https://board-image-s3-bucket.s3.ap-northeast-2.amazonaws.com/default_image.jpg";
+const DEFAULT_IMAGE_URL =
+  "https://board-image-s3-bucket.s3.ap-northeast-2.amazonaws.com/default_image.jpg";
 
 const PostDetail = () => {
   const { id } = useParams();
@@ -29,6 +30,13 @@ const PostDetail = () => {
   const [nextPost, setNextPost] = useState(null);
   const [showPostReportModal, setShowPostReportModal] = useState(false);
   const [showCommentReportModal, setShowCommentReportModal] = useState(null); // commentId
+  const [deletingCommentId, setDeletingCommentId] = useState(null); // 삭제 중인 댓글 ID
+  const [editingCommentId, setEditingCommentId] = useState(null); // 수정 중인 댓글 ID
+  const [editingCommentContent, setEditingCommentContent] = useState(""); // 수정 중인 댓글 내용
+  const [updatingCommentId, setUpdatingCommentId] = useState(null); // 업데이트 중인 댓글 ID
+  const [replyingToCommentId, setReplyingToCommentId] = useState(null); // 대댓글 작성 중인 댓글 ID
+  const [replyContent, setReplyContent] = useState({}); // 각 댓글별 대댓글 내용 { commentId: "content" }
+  const [submittingReplyId, setSubmittingReplyId] = useState(null); // 대댓글 제출 중인 댓글 ID
 
   const fetchPost = async () => {
     try {
@@ -45,17 +53,41 @@ const PostDetail = () => {
   const fetchComments = async () => {
     try {
       const commentsData = await commentAPI.getComments(id);
-      const commentsWithReactions = (commentsData || []).map(comment => ({
+      console.log("댓글 데이터 (fetchComments):", commentsData);
+
+      // 댓글 데이터가 배열인지 확인
+      const commentsArray = Array.isArray(commentsData)
+        ? commentsData
+        : commentsData?.content || commentsData?.data || [];
+
+      // 백엔드에서 계층 구조로 반환 (children 배열 포함)
+      // 댓글에 reactions 정보 추가 (백엔드에서 제공하지 않으면 기본값)
+      const addReactions = comment => ({
         ...comment,
         likeCount: comment.likeCount || 0,
         disLikeCount: comment.disLikeCount || 0,
         userReaction: null,
-      }));
+        // children 배열이 있으면 재귀적으로 처리
+        children: comment.children
+          ? comment.children.map(child => addReactions(child))
+          : [],
+      });
+      const commentsWithReactions = commentsArray.map(comment =>
+        addReactions(comment)
+      );
       setComments(commentsWithReactions);
       return commentsWithReactions;
     } catch (error) {
       console.error("댓글 조회 실패:", error);
-      throw error;
+      console.error("댓글 조회 에러 상세:", {
+        message: error.message,
+        response: error.response,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      // 댓글 조회 실패 시 빈 배열로 설정
+      setComments([]);
+      return [];
     }
   };
 
@@ -86,41 +118,82 @@ const PostDetail = () => {
   useEffect(() => {
     let isMounted = true;
     const abortController = new AbortController();
-    
+
     const loadData = async () => {
       try {
         setLoading(true);
-        const [postData, commentsData] = await Promise.all([
-          postAPI.getPost(id),
-          commentAPI.getComments(id)
-        ]);
-        
-        if (!abortController.signal.aborted && isMounted) {
-          console.log("게시글 상세 정보 (전체):", postData);
-          setPost(postData);
-          
-          const commentsWithReactions = (commentsData || []).map(comment => ({
-            ...comment,
-            likeCount: comment.likeCount || 0,
-            disLikeCount: comment.disLikeCount || 0,
-            userReaction: null,
-          }));
-          setComments(commentsWithReactions);
+
+        // 게시글과 댓글을 별도로 처리하여 댓글 API 실패 시에도 게시글은 표시되도록 함
+        let postData = null;
+        let commentsData = [];
+
+        // 게시글 조회
+        try {
+          postData = await postAPI.getPost(id);
+          if (!abortController.signal.aborted && isMounted) {
+            console.log("게시글 상세 정보 (전체):", postData);
+            setPost(postData);
+          }
+        } catch (error) {
+          console.error("게시글 조회 실패:", error);
+          if (!abortController.signal.aborted && isMounted) {
+            // 게시글 조회 실패 시 에러 상태로 설정
+            setPost(null);
+          }
+        }
+
+        // 댓글 조회 (실패해도 게시글은 표시)
+        try {
+          commentsData = await commentAPI.getComments(id);
+          console.log("댓글 데이터:", commentsData);
+
+          if (!abortController.signal.aborted && isMounted) {
+            // 댓글 데이터가 배열인지 확인
+            const commentsArray = Array.isArray(commentsData)
+              ? commentsData
+              : commentsData?.content || commentsData?.data || [];
+
+            // 댓글에 reactions 정보 추가 (백엔드에서 제공하지 않으면 기본값)
+            const addReactions = comment => ({
+              ...comment,
+              likeCount: comment.likeCount || 0,
+              disLikeCount: comment.disLikeCount || 0,
+              userReaction: null,
+              // children 배열이 있으면 재귀적으로 처리
+              children: comment.children
+                ? comment.children.map(child => addReactions(child))
+                : [],
+            });
+            const commentsWithReactions = commentsArray.map(comment =>
+              addReactions(comment)
+            );
+            setComments(commentsWithReactions);
+          }
+        } catch (error) {
+          console.error("댓글 조회 실패:", error);
+          console.error("댓글 조회 에러 상세:", {
+            message: error.message,
+            response: error.response,
+            status: error.response?.status,
+            data: error.response?.data,
+          });
+          // 댓글 조회 실패 시 빈 배열로 설정 (게시글은 계속 표시)
+          if (!abortController.signal.aborted && isMounted) {
+            setComments([]);
+          }
         }
       } catch (error) {
-        if (!abortController.signal.aborted && isMounted) {
-          console.error("게시글 조회 실패:", error);
-        }
+        console.error("데이터 로드 중 예상치 못한 에러:", error);
       } finally {
         if (!abortController.signal.aborted && isMounted) {
           setLoading(false);
         }
       }
     };
-    
+
     loadData();
     fetchAdjacentPosts();
-    
+
     return () => {
       isMounted = false;
       abortController.abort();
@@ -177,7 +250,6 @@ const PostDetail = () => {
     }
   }, [user, post]);
 
-
   const handleDelete = async () => {
     if (!window.confirm("정말 삭제하시겠습니까?")) {
       return;
@@ -191,6 +263,11 @@ const PostDetail = () => {
     }
   };
 
+  /**
+   * 게시글 반응 핸들러 (좋아요/싫어요)
+   * 좋아요를 누른 상태에서 싫어요를 누르면 좋아요를 취소하고 싫어요로 변경
+   * @param {string} reactionType - "LIKE" 또는 "DISLIKE"
+   */
   const handleReaction = async reactionType => {
     if (!isAuthenticated) {
       alert("로그인이 필요합니다.");
@@ -212,27 +289,38 @@ const PostDetail = () => {
 
     setReacting(true);
     try {
-      console.log("반응 요청:", { id, reactionType });
-      const result = await postAPI.addReaction(id, reactionType);
-      console.log("반응 성공:", result);
+      // 이전 반응 상태 저장 (롤백용)
+      const previousReaction = userReaction;
+
+      console.log("반응 요청:", {
+        id,
+        reactionType,
+        previousReaction,
+        willCancelPrevious:
+          previousReaction !== null && previousReaction !== reactionType,
+      });
 
       // 낙관적 업데이트: 서버 응답 전에 UI 업데이트
+      // 좋아요를 누른 상태에서 싫어요를 누르면 좋아요 취소하고 싫어요 추가
       setUserReaction(reactionType);
       if (post) {
         const updatedPost = { ...post };
+
         if (reactionType === "LIKE") {
+          // 좋아요 추가
           updatedPost.likeCount = (updatedPost.likeCount || 0) + 1;
-          // 이전에 싫어요를 눌렀다면 싫어요 수 감소
-          if (userReaction === "DISLIKE") {
+          // 이전에 싫어요를 눌렀다면 싫어요 수 감소 (취소)
+          if (previousReaction === "DISLIKE") {
             updatedPost.disLikeCount = Math.max(
               0,
               (updatedPost.disLikeCount || 0) - 1
             );
           }
         } else if (reactionType === "DISLIKE") {
+          // 싫어요 추가
           updatedPost.disLikeCount = (updatedPost.disLikeCount || 0) + 1;
-          // 이전에 좋아요를 눌렀다면 좋아요 수 감소
-          if (userReaction === "LIKE") {
+          // 이전에 좋아요를 눌렀다면 좋아요 수 감소 (취소)
+          if (previousReaction === "LIKE") {
             updatedPost.likeCount = Math.max(
               0,
               (updatedPost.likeCount || 0) - 1
@@ -242,7 +330,11 @@ const PostDetail = () => {
         setPost(updatedPost);
       }
 
-      // 서버에서 최신 데이터 가져오기
+      // 백엔드 API 호출
+      const result = await postAPI.addReaction(id, reactionType);
+      console.log("반응 성공:", result);
+
+      // 서버에서 최신 데이터 가져오기 (실제 반영된 값 확인)
       await fetchPost();
     } catch (error) {
       console.error("반응 추가 실패:", error);
@@ -253,26 +345,32 @@ const PostDetail = () => {
       // 낙관적 업데이트 롤백
       if (post) {
         const rolledBackPost = { ...post };
+        const previousReaction = userReaction;
+
         if (reactionType === "LIKE") {
+          // 좋아요 추가를 롤백
           rolledBackPost.likeCount = Math.max(
             0,
             (rolledBackPost.likeCount || 0) - 1
           );
-          if (userReaction === "DISLIKE") {
+          // 싫어요 취소를 롤백 (원래대로 복원)
+          if (previousReaction === "DISLIKE") {
             rolledBackPost.disLikeCount =
               (rolledBackPost.disLikeCount || 0) + 1;
           }
         } else if (reactionType === "DISLIKE") {
+          // 싫어요 추가를 롤백
           rolledBackPost.disLikeCount = Math.max(
             0,
             (rolledBackPost.disLikeCount || 0) - 1
           );
-          if (userReaction === "LIKE") {
+          // 좋아요 취소를 롤백 (원래대로 복원)
+          if (previousReaction === "LIKE") {
             rolledBackPost.likeCount = (rolledBackPost.likeCount || 0) + 1;
           }
         }
         setPost(rolledBackPost);
-        setUserReaction(userReaction); // 이전 상태로 복원
+        setUserReaction(previousReaction); // 이전 상태로 복원
       }
 
       const errorMessage =
@@ -366,6 +464,172 @@ const PostDetail = () => {
     // await commentAPI.addReaction(id, commentId, reactionType);
   };
 
+  /**
+   * 댓글 작성자와 현재 사용자 일치 여부 확인
+   */
+  const isCommentOwner = comment => {
+    const commentAuthor =
+      comment.authorName || comment.writer || comment.user || comment.username;
+    const currentUser =
+      user?.username || user?.nickName || user?.email || user?.user;
+    if (!commentAuthor || !currentUser) return false;
+    return String(commentAuthor) === String(currentUser);
+  };
+
+  /**
+   * 댓글 삭제
+   */
+  const handleCommentDelete = async comment => {
+    const commentId = comment.commentId || comment.id;
+    if (!commentId) {
+      alert("댓글 ID를 찾을 수 없습니다.");
+      return;
+    }
+    if (!window.confirm("정말 이 댓글을 삭제하시겠습니까?")) return;
+
+    try {
+      setDeletingCommentId(commentId);
+      await commentAPI.deleteComment(id, commentId);
+      await fetchComments();
+    } catch (error) {
+      console.error("댓글 삭제 실패:", error);
+      alert(
+        error.response?.data?.message ||
+          error.response?.data?.error ||
+          "댓글 삭제에 실패했습니다."
+      );
+    } finally {
+      setDeletingCommentId(null);
+    }
+  };
+
+  /**
+   * 댓글 수정 모드 시작
+   */
+  const handleEditComment = comment => {
+    const commentId = comment.commentId || comment.id;
+    setEditingCommentId(commentId);
+    setEditingCommentContent(comment.content || "");
+  };
+
+  /**
+   * 댓글 수정 취소
+   */
+  const handleCancelEdit = () => {
+    setEditingCommentId(null);
+    setEditingCommentContent("");
+  };
+
+  /**
+   * 댓글 수정 완료
+   */
+  const handleUpdateComment = async commentId => {
+    if (!editingCommentContent.trim()) {
+      alert("댓글 내용을 입력해주세요.");
+      return;
+    }
+
+    try {
+      setUpdatingCommentId(commentId);
+      await commentAPI.updateComment(id, commentId, editingCommentContent);
+      setEditingCommentId(null);
+      setEditingCommentContent("");
+      await fetchComments();
+    } catch (error) {
+      console.error("댓글 수정 실패:", error);
+      alert(
+        error.response?.data?.message ||
+          error.response?.data?.error ||
+          "댓글 수정에 실패했습니다."
+      );
+    } finally {
+      setUpdatingCommentId(null);
+    }
+  };
+
+  /**
+   * 대댓글 작성 모드 시작/취소
+   */
+  const handleReplyToggle = commentId => {
+    if (replyingToCommentId === commentId) {
+      // 답글 작성 취소
+      setReplyingToCommentId(null);
+      setReplyContent(prev => {
+        const newContent = { ...prev };
+        delete newContent[commentId];
+        return newContent;
+      });
+    } else {
+      // 답글 작성 시작
+      setReplyingToCommentId(commentId);
+      setReplyContent(prev => ({
+        ...prev,
+        [commentId]: "",
+      }));
+    }
+  };
+
+  /**
+   * 대댓글 작성 완료
+   */
+  const handleReplySubmit = async (e, parentCommentId) => {
+    e.preventDefault();
+    if (!isAuthenticated) {
+      alert("로그인이 필요합니다.");
+      navigate("/login");
+      return;
+    }
+
+    const content = replyContent[parentCommentId] || "";
+    if (!content.trim()) {
+      return;
+    }
+
+    try {
+      setSubmittingReplyId(parentCommentId);
+      console.log("대댓글 작성 요청:", {
+        postId: id,
+        parentId: parentCommentId,
+        content,
+      });
+      await commentAPI.createComment(id, content, parentCommentId);
+      console.log("대댓글 작성 성공");
+      setReplyingToCommentId(null);
+      setReplyContent(prev => {
+        const newContent = { ...prev };
+        delete newContent[parentCommentId];
+        return newContent;
+      });
+      await fetchComments();
+    } catch (error) {
+      console.error("대댓글 작성 실패:", error);
+      alert(
+        error.response?.data?.message ||
+          error.response?.data?.error ||
+          "대댓글 작성에 실패했습니다."
+      );
+    } finally {
+      setSubmittingReplyId(null);
+    }
+  };
+
+  /**
+   * 전체 댓글 수 계산 (대댓글 포함)
+   */
+  const getTotalCommentCount = comments => {
+    let count = 0;
+    const countRecursive = commentList => {
+      commentList.forEach(comment => {
+        count++;
+        if (comment.children && comment.children.length > 0) {
+          countRecursive(comment.children);
+        }
+      });
+    };
+    countRecursive(comments);
+    return count;
+  };
+
   const formatDate = dateString => {
     if (!dateString) return "";
     const date = new Date(dateString);
@@ -373,6 +637,194 @@ const PostDetail = () => {
     const month = String(date.getMonth() + 1).padStart(2, "0");
     const day = String(date.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
+  };
+
+  /**
+   * 댓글 렌더링 함수 (depth 필드를 사용하여 대댓글도 렌더링)
+   */
+  const renderComment = (comment, depth = null) => {
+    const commentId = comment.commentId || comment.id;
+    const isEditing = editingCommentId === commentId;
+    const isReplying = replyingToCommentId === commentId;
+
+    // depth 필드를 우선 사용, 없으면 파라미터로 전달된 depth 사용
+    const commentDepth =
+      comment.depth !== undefined ? comment.depth : depth !== null ? depth : 0;
+    const isReply = commentDepth > 0;
+
+    return (
+      <div
+        key={commentId}
+        className={`comment-item ${isReply ? "comment-reply" : ""}`}
+        style={{ marginLeft: isReply ? `${commentDepth * 2}rem` : "0" }}
+      >
+        <div className="comment-header">
+          <div className="comment-author-section">
+            <span className="comment-writer">
+              {comment.authorName || comment.writer}
+            </span>
+            <span className="comment-date">
+              {formatDate(comment.createdAt || comment.createdDate)}
+            </span>
+          </div>
+          <div className="comment-reactions">
+            <Button
+              variant={comment.userReaction === "LIKE" ? "primary" : "outline"}
+              size="small"
+              onClick={() => handleCommentReaction(commentId, "LIKE")}
+              className="comment-reaction-btn"
+            >
+              👍 {comment.likeCount || 0}
+            </Button>
+            <Button
+              variant={
+                comment.userReaction === "DISLIKE" ? "primary" : "outline"
+              }
+              size="small"
+              onClick={() => handleCommentReaction(commentId, "DISLIKE")}
+              className="comment-reaction-btn"
+            >
+              👎 {comment.disLikeCount || 0}
+            </Button>
+            {isCommentOwner(comment) && (
+              <>
+                {isEditing ? (
+                  <>
+                    <Button
+                      variant="primary"
+                      size="small"
+                      onClick={() => handleUpdateComment(commentId)}
+                      disabled={updatingCommentId === commentId}
+                      className="comment-update-btn"
+                    >
+                      {updatingCommentId === commentId ? "수정 중..." : "완료"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="small"
+                      onClick={handleCancelEdit}
+                      disabled={updatingCommentId === commentId}
+                      className="comment-cancel-btn"
+                    >
+                      취소
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="small"
+                      onClick={() => handleEditComment(comment)}
+                      disabled={deletingCommentId === commentId}
+                      className="comment-edit-btn"
+                    >
+                      수정
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="small"
+                      onClick={() => handleCommentDelete(comment)}
+                      disabled={deletingCommentId === commentId}
+                      className="comment-delete-btn"
+                    >
+                      삭제
+                    </Button>
+                  </>
+                )}
+              </>
+            )}
+            {isAuthenticated && (
+              <>
+                {/* depth가 4 미만일 때만 답글 버튼 표시 (최대 4단계까지) */}
+                {commentDepth < 4 && (
+                  <Button
+                    variant="outline"
+                    size="small"
+                    onClick={() => handleReplyToggle(commentId)}
+                    className="comment-reply-btn"
+                  >
+                    {isReplying ? "답글 취소" : "답글"}
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="small"
+                  onClick={() => setShowCommentReportModal(commentId)}
+                  className="comment-report-btn"
+                >
+                  🚨
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+        {isEditing ? (
+          <div className="comment-edit-form">
+            <Textarea
+              value={editingCommentContent}
+              onChange={e => setEditingCommentContent(e.target.value)}
+              placeholder="댓글을 입력하세요..."
+              rows={3}
+              className="comment-edit-textarea"
+            />
+          </div>
+        ) : (
+          <div className="comment-content">{comment.content}</div>
+        )}
+
+        {/* 대댓글 작성 폼 (depth가 4 미만일 때만 표시) */}
+        {isReplying && commentDepth < 4 && (
+          <form
+            onSubmit={e => handleReplySubmit(e, commentId)}
+            className="reply-form"
+          >
+            <Textarea
+              value={replyContent[commentId] || ""}
+              onChange={e =>
+                setReplyContent(prev => ({
+                  ...prev,
+                  [commentId]: e.target.value,
+                }))
+              }
+              placeholder="대댓글을 입력하세요..."
+              rows={2}
+              className="reply-textarea"
+            />
+            <div className="reply-form-actions">
+              <Button
+                type="submit"
+                variant="primary"
+                size="small"
+                disabled={submittingReplyId === commentId}
+              >
+                {submittingReplyId === commentId ? "작성 중..." : "작성"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="small"
+                onClick={() => handleReplyToggle(commentId)}
+                disabled={submittingReplyId === commentId}
+              >
+                취소
+              </Button>
+            </div>
+          </form>
+        )}
+
+        {/* 대댓글 목록 (children 배열이 있으면 재귀적으로 렌더링) */}
+        {comment.children && comment.children.length > 0 && (
+          <div className="comment-children">
+            {comment.children.map(child =>
+              renderComment(
+                child,
+                child.depth !== undefined ? child.depth : commentDepth + 1
+              )
+            )}
+          </div>
+        )}
+      </div>
+    );
   };
 
   const handlePostReport = async reasonId => {
@@ -418,7 +870,7 @@ const PostDetail = () => {
         <div className="post-navigation-top">
           <Button
             variant="outline"
-            onClick={() => navigate("/posts")}
+            onClick={() => navigate("/posts", { replace: false })}
             className="back-to-list-btn"
           >
             ← 목록으로
@@ -486,7 +938,7 @@ const PostDetail = () => {
                   src={url}
                   alt={`게시글 이미지 ${index + 1}`}
                   className="post-image"
-                  onError={(e) => {
+                  onError={e => {
                     e.target.style.display = "none";
                   }}
                 />
@@ -516,7 +968,9 @@ const PostDetail = () => {
           )}
 
           <div className="comments-section">
-            <h2 className="comments-title">댓글 ({comments.length})</h2>
+            <h2 className="comments-title">
+              댓글 ({getTotalCommentCount(comments)})
+            </h2>
 
             {isAuthenticated ? (
               <form onSubmit={handleCommentSubmit} className="comment-form">
@@ -540,74 +994,45 @@ const PostDetail = () => {
               {comments.length === 0 ? (
                 <div className="empty-comments">댓글이 없습니다.</div>
               ) : (
-                comments.map(comment => (
-                  <div
-                    key={comment.commentId || comment.id}
-                    className="comment-item"
-                  >
-                    <div className="comment-header">
-                      <div className="comment-author-section">
-                        <span className="comment-writer">
-                          {comment.authorName || comment.writer}
-                        </span>
-                        <span className="comment-date">
-                          {formatDate(comment.createdAt || comment.createdDate)}
-                        </span>
-                      </div>
-                      <div className="comment-reactions">
-                        <Button
-                          variant={
-                            comment.userReaction === "LIKE"
-                              ? "primary"
-                              : "outline"
-                          }
-                          size="small"
-                          onClick={() =>
-                            handleCommentReaction(
-                              comment.commentId || comment.id,
-                              "LIKE"
-                            )
-                          }
-                          className="comment-reaction-btn"
-                        >
-                          👍 {comment.likeCount || 0}
-                        </Button>
-                        <Button
-                          variant={
-                            comment.userReaction === "DISLIKE"
-                              ? "primary"
-                              : "outline"
-                          }
-                          size="small"
-                          onClick={() =>
-                            handleCommentReaction(
-                              comment.commentId || comment.id,
-                              "DISLIKE"
-                            )
-                          }
-                          className="comment-reaction-btn"
-                        >
-                          👎 {comment.disLikeCount || 0}
-                        </Button>
-                        {isAuthenticated && (
-                          <Button
-                            variant="outline"
-                            size="small"
-                            onClick={() =>
-                              setShowCommentReportModal(
-                                comment.commentId || comment.id
-                              )
-                            }
-                            className="comment-report-btn"
-                          >
-                            🚨
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                    <div className="comment-content">{comment.content}</div>
-                  </div>
-                ))
+                (() => {
+                  // depth 필드를 사용하여 댓글을 그룹화
+                  // children 배열이 있으면 그대로 사용, 없으면 depth와 parentCommentId로 그룹화
+                  const buildCommentTree = commentList => {
+                    // children 배열이 이미 있는 경우 (계층 구조로 반환)
+                    if (
+                      commentList.length > 0 &&
+                      commentList[0].children !== undefined
+                    ) {
+                      return commentList;
+                    }
+
+                    // 평면 배열인 경우 depth와 parentCommentId로 그룹화
+                    const rootComments = commentList.filter(
+                      c => (c.depth || 0) === 0
+                    );
+                    const childComments = commentList.filter(
+                      c => (c.depth || 0) > 0
+                    );
+
+                    // 각 댓글에 children 추가
+                    const addChildren = comment => {
+                      const parentId = comment.commentId || comment.id;
+                      const children = childComments.filter(
+                        child =>
+                          (child.parentCommentId || child.parentId) === parentId
+                      );
+                      return {
+                        ...comment,
+                        children: children.map(child => addChildren(child)),
+                      };
+                    };
+
+                    return rootComments.map(comment => addChildren(comment));
+                  };
+
+                  const commentTree = buildCommentTree(comments);
+                  return commentTree.map(comment => renderComment(comment));
+                })()
               )}
             </div>
           </div>

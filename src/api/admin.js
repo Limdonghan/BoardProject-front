@@ -78,4 +78,10 @@ export const adminAPI = {
     });
     return response.data;
   },
+
+  // 관리자 삭제 전용 API (게시글 또는 댓글 삭제)
+  adminDelete: async id => {
+    const response = await apiClient.delete(`/api/admin/${id}`);
+    return response.data;
+  },
 };

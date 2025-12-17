@@ -8,9 +8,10 @@ export const commentAPI = {
   },
 
   // 댓글 작성
-  createComment: async (postId, content) => {
+  createComment: async (postId, content, parentId = null) => {
     const response = await apiClient.post(`/api/post/${postId}/comment`, {
       comment: content, // 백엔드 DTO 필드명이 comment
+      parentId: parentId, // 대댓글인 경우 부모 댓글 ID
     });
     return response.data;
   },
